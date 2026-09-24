@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sandhu Chart Terminal — All Crypto</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1020;color:#e8eefc;font-family:Arial,sans-serif}
+header{padding:12px 14px;border-bottom:1px solid #202944;display:flex;gap:10px;align-items:center;justify-content:space-between;position:sticky;top:0;background:#0b1020;z-index:5}
+h1{font-size:18px;margin:0}
+#status{font-size:12px;color:#31d17c}
+.wrap{display:grid;grid-template-columns:250px 1fr;min-height:calc(100vh - 52px)}
+aside{border-right:1px solid #202944;padding:10px;overflow:auto;max-height:calc(100vh - 52px)}
+.search{width:100%;padding:10px;border-radius:8px;border:1px solid #293451;background:#11182b;color:white;margin-bottom:8px}
+.coin{padding:9px;border-radius:8px;margin:3px 0;cursor:pointer;display:flex;justify-content:space-between;gap:5px}
+.coin:hover,.coin.active{background:#1a2540}
+.coin small{color:#8fa0c3}
+.main{padding:10px;min-width:0}
+.top{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:9px}
+button,.tf{background:#141d34;color:#dfe8ff;border:1px solid #2b3857;border-radius:7px;padding:8px 10px;cursor:pointer}
+button:hover,.tf.active{background:#243457}
+.price{font-size:20px;font-weight:bold;margin-left:auto}
+.card{background:#10172a;border:1px solid #202c49;border-radius:10px;padding:9px;margin-bottom:9px}
+#chart{height:520px}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}
+.stat{background:#141d34;padding:10px;border-radius:8px}
+.label{font-size:10px;color:#8fa0c3}
+.val{font-weight:bold;margin-top:5px}
+.green{color:#31d17c}.red{color:#ff657a}.yellow{color:#ffd166}
+.signalbox{font-size:16px}
+.note{font-size:11px;color:#8fa0c3;line-height:1.5}
+@media(max-width:800px){
+ .wrap{grid-template-columns:1fr}
+ aside{border-right:0;border-bottom:1px solid #202944;max-height:210px}
+ #chart{height:430px}
+ .stats{grid-template-columns:repeat(2,1fr)}
+ .price{margin-left:0}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 Sandhu Chart Terminal</h1>
+  <span id="status">Loading coins...</span>
+</header>
+
+<div class="wrap">
+<aside>
+  <input id="search" class="search" placeholder="Search any coin e.g. BTC, PEPE">
+  <div id="coinCount" class="note" style="margin:4px 2px 8px"></div>
+  <div id="coins"></div>
+</aside>
+
+<main class="main">
+  <div class="top">
+    <button class="tf" data-tf="1m">1m</button>
+    <button class="tf active" data-tf="5m">5m</button>
+    <button class="tf" data-tf="15m">15m</button>
+    <button class="tf" data-tf="1h">1H</button>
+    <button class="tf" data-tf="4h">4H</button>
+    <button class="tf" data-tf="1d">1D</button>
+    <span class="price" id="price">--</span>
+  </div>
+
+  <div class="card"><div id="chart"></div></div>
+
+  <div class="stats">
+    <div class="stat"><div class="label">SIGNAL</div><div class="val signalbox" id="signal">WAIT</div></div>
+    <div class="stat"><div class="label">ENTRY</div><div class="val" id="entry">--</div></div>
+    <div class="stat"><div class="label">STOP LOSS</div><div class="val red" id="sl">--</div></div>
+    <div class="stat"><div class="label">TP1</div><div class="val green" id="tp1">--</div></div>
+    <div class="stat"><div class="label">TP2</div><div class="val green" id="tp2">--</div></div>
+  </div>
+
+  <div class="card">
+    <b>Crypto Edge Signal</b>
+    <div class="note" id="details">
+      EMA 20/50 + RSI 14 + ATR 14. BUY requires EMA20 above EMA50 and RSI ≥55.
+      SELL requires EMA20 below EMA50 and RSI ≤45. SL = 1.5× ATR, TP1 = 1.5R, TP2 = 3R.
+    </div>
+  </div>
+</main>
+</div>
+
+<script>
+let symbols=[], symbol="BTCUSDT", interval="5m", ws=null, candles=[];
+let chart, candleSeries, ema20Series, ema50Series, markers=[];
+
+const $=id=>document.getElementById(id);
+
+chart=LightweightCharts.createChart($("chart"),{
+  layout:{background:{color:"#10172a"},textColor:"#aab7d3"},
+  grid:{vertLines:{color:"#1d2943"},horzLines:{color:"#1d2943"}},
+  rightPriceScale:{borderColor:"#293451"},
+  timeScale:{borderColor:"#293451",timeVisible:true}
+});
+candleSeries=chart.addCandlestickSeries({
+  upColor:"#31d17c",downColor:"#ff657a",borderVisible:false,
+  wickUpColor:"#31d17c",wickDownColor:"#ff657a"
+});
+ema20Series=chart.addLineSeries({color:"#ffd166",lineWidth:2});
+ema50Series=chart.addLineSeries({color:"#7aa2ff",lineWidth:2});
+
+function ema(v,p){
+  if(!v.length)return [];
+  const k=2/(p+1),o=[v[0]]; let e=v[0];
+  for(let i=1;i<v.length;i++){e=v[i]*k+e*(1-k);o.push(e)}
+  return o;
+}
+function rsi(v,p=14){
+  let o=Array(v.length).fill(null);
+  if(v.length<=p)return o;
+  let gain=0,loss=0;
+  for(let i=1;i<=p;i++){let d=v[i]-v[i-1];if(d>=0)gain+=d;else loss-=d}
+  gain/=p;loss/=p;o[p]=loss===0?100:100-100/(1+gain/loss);
+  for(let i=p+1;i<v.length;i++){
+    let d=v[i]-v[i-1],g=Math.max(d,0),l=Math.max(-d,0);
+    gain=(gain*(p-1)+g)/p;loss=(loss*(p-1)+l)/p;
+    o[i]=loss===0?100:100-100/(1+gain/loss);
+  }
+  return o;
+}
+function atr(c,p=14){
+  let tr=[],o=Array(c.length).fill(null);
+  if(c.length<2)return o;
+  for(let i=0;i<c.length;i++){
+    if(i===0)tr.push(c[i].high-c[i].low);
+    else tr.push(Math.max(c[i].high-c[i].low,Math.abs(c[i].high-c[i-1].close),Math.abs(c[i].low-c[i-1].close)));
+  }
+  if(c.length<=p)return o;
+  let a=tr.slice(1,p+1).reduce((x,y)=>x+y,0)/p;
+  o[p]=a;
+  for(let i=p+1;i<c.length;i++){a=(a*(p-1)+tr[i])/p;o[i]=a}
+  return o;
+}
+function fmt(n){
+  if(n==null||!isFinite(n))return "--";
+  return Number(n).toLocaleString(undefined,{maximumFractionDigits:n>100?2:8});
+}
+function signalFor(c, useIndex){
+  if(useIndex<50)return {sig:"WAIT"};
+  const closes=c.map(x=>x.close), e20=ema(closes,20), e50=ema(closes,50), rs=rsi(closes), at=atr(c);
+  const p=closes[useIndex], e=e20[useIndex], s=e50[useIndex], r=rs[useIndex], a=at[useIndex];
+  if(r==null||a==null)return {sig:"WAIT"};
+  let sig="WAIT";
+  if(e>s && r>=55) sig="BUY";
+  else if(e<s && r<=45) sig="SELL";
+  if(sig==="WAIT")return {sig, p,r,e,s,a};
+  const sl=sig==="BUY"?p-a*1.5:p+a*1.5;
+  const risk=Math.abs(p-sl);
+  const tp1=sig==="BUY"?p+risk*1.5:p-risk*1.5;
+  const tp2=sig==="BUY"?p+risk*3:p-risk*3;
+  return {sig,p,r,e,s,a,sl,tp1,tp2};
+}
+function updatePanel(s){
+  $("price").textContent=fmt(s.p);
+  $("signal").textContent=s.sig;
+  $("signal").className="val signalbox "+(s.sig==="BUY"?"green":s.sig==="SELL"?"red":"yellow");
+  $("entry").textContent=fmt(s.p);
+  $("sl").textContent=fmt(s.sl);
+  $("tp1").textContent=fmt(s.tp1);
+  $("tp2").textContent=fmt(s.tp2);
+  $("details").textContent=s.sig==="WAIT"
+    ? "WAIT — EMA/RSI conditions are not aligned. No BUY/SELL signal at this moment."
+    : `${s.sig} • RSI ${s.r?.toFixed(2)} • EMA20 ${fmt(s.e)} • EMA50 ${fmt(s.s)} • ATR ${fmt(s.a)} • SL 1.5×ATR • TP1 1.5R • TP2 3R`;
+}
+function markSignal(c){
+  const out=[];
+  let last="";
+  for(let i=50;i<c.length;i++){
+    const x=signalFor(c,i);
+    if((x.sig==="BUY"||x.sig==="SELL")&&x.sig!==last){
+      out.push({time:c[i].time,position:x.sig==="BUY"?"belowBar":"aboveBar",
+        color:x.sig==="BUY"?"#31d17c":"#ff657a",
+        shape:x.sig==="BUY"?"arrowUp":"arrowDown",
+        text:x.sig});
+      last=x.sig;
+    }
+    if(x.sig==="WAIT")last="";
+  }
+  return out;
+}
+function renderCoins(filter=""){
+  const box=$("coins");box.innerHTML="";
+  const f=filter.trim().toLowerCase();
+  const list=symbols.filter(x=>!f||x.baseAsset.toLowerCase().includes(f)||x.symbol.toLowerCase().includes(f));
+  $("coinCount").textContent=`${list.length} USDT coins`;
+  list.slice(0,500).forEach(x=>{
+    const d=document.createElement("div");
+    d.className="coin"+(x.symbol===symbol?" active":"");
+    d.innerHTML=`<b>${x.baseAsset}</b><small>${x.symbol}</small>`;
+    d.onclick=()=>{symbol=x.symbol;renderCoins($("search").value);load()};
+    box.appendChild(d);
+  });
+}
+$("search").oninput=e=>renderCoins(e.target.value);
+document.querySelectorAll(".tf").forEach(b=>b.onclick=()=>{
+  interval=b.dataset.tf;
+  document.querySelectorAll(".tf").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active"); load();
+});
+
+async function loadSymbols(){
+  try{
+    const data=await fetch("https://api.binance.com/api/v3/exchangeInfo").then(r=>r.json());
+    symbols=data.symbols
+      .filter(x=>x.status==="TRADING"&&x.quoteAsset==="USDT"&&x.isSpotTradingAllowed)
+      .sort((a,b)=>a.baseAsset.localeCompare(b.baseAsset));
+    renderCoins();
+    $("status").textContent=`● LIVE • ${symbols.length} coins`;
+  }catch(e){
+    $("status").textContent="Coin list error";
+    $("coinCount").textContent="Could not load Binance coin list";
+  }
+}
+async function load(){
+  try{
+    $("status").textContent=`Loading ${symbol}...`;
+    if(ws){try{ws.close()}catch(e){}}
+    const url=`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`;
+    const data=await fetch(url).then(r=>r.json());
+    if(!Array.isArray(data))throw new Error("No data");
+    candles=data.map(x=>({time:x[0]/1000,open:+x[1],high:+x[2],low:+x[3],close:+x[4]}));
+    candleSeries.setData(candles);
+    const closes=candles.map(x=>x.close),e20=ema(closes,20),e50=ema(closes,50);
+    ema20Series.setData(candles.map((x,i)=>({time:x.time,value:e20[i]})));
+    ema50Series.setData(candles.map((x,i)=>({time:x.time,value:e50[i]})));
+    markers=markSignal(candles);
+    candleSeries.setMarkers(markers);
+    updatePanel(signalFor(candles,candles.length-2)); // last CLOSED candle
+    chart.timeScale().fitContent();
+    connect();
+  }catch(e){
+    $("status").textContent="Data error";
+    $("details").textContent="This symbol/timeframe could not be loaded. Try another coin.";
+  }
+}
+function connect(){
+  ws=new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
+  ws.onopen=()=>{$("status").textContent=`● LIVE • ${symbol}`};
+  ws.onclose=()=>{$("status").textContent="Disconnected — refreshing..."};
+  ws.onmessage=e=>{
+    const k=JSON.parse(e.data).k;
+    const c={time:k.t/1000,open:+k.o,high:+k.h,low:+k.l,close:+k.c};
+    candleSeries.update(c);
+    // Signal is calculated from CLOSED candles only; current candle is used for display.
+    if(k.x){
+      candles[candles.length-1]=c;
+      const closes=candles.map(x=>x.close),e20=ema(closes,20),e50=ema(closes,50);
+      ema20Series.setData(candles.map((x,i)=>({time:x.time,value:e20[i]})));
+      ema50Series.setData(candles.map((x,i)=>({time:x.time,value:e50[i]})));
+      candleSeries.setMarkers(markSignal(candles));
+      updatePanel(signalFor(candles,candles.length-1));
+    }
+  };
+}
+loadSymbols().then(load);
+</script>
+</body>
+</html>
